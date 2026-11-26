@@ -1,0 +1,96 @@
+name: Windows EXE
+on:
+  push:
+    branches: ["codex/yuri-crm"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install verified registry packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Unit tests
+        run: python -m unittest -v test_app.py
+      - name: Download official offline WebView2 Runtime
+        shell: pwsh
+        run: |
+          $url = 'https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/63f7af19-5d22-43ab-af18-239a7b23b84c/MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+          Invoke-WebRequest $url -OutFile MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+          $actual = (Get-FileHash MicrosoftEdgeWebView2RuntimeInstallerX64.exe -Algorithm SHA256).Hash
+          if ($actual -ne '47BC51387AFF95C1275CE38CFBBB5FBAB99B43B33214049877BBCDBCC7A970D5') { throw 'Official WebView2 installer hash mismatch' }
+      - name: Build windowed executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --collect-all telethon --add-data "index.html;." --add-data "desktop.css;." --add-data "desktop.js;." --add-binary "MicrosoftEdgeWebView2RuntimeInstallerX64.exe;." launcher.py
+      - name: Smoke test bundled EXE and persisted settings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:YURI_DATA_DIR = Join-Path $env:RUNNER_TEMP 'YuriCRM-smoke'
+          $env:YURI_PORT = '18787'
+          $exe = Join-Path $PWD 'dist\YuriCRM.exe'
+          function Start-App {
+            $p = Start-Process -FilePath $exe -ArgumentList '--smoke' -WindowStyle Hidden -PassThru
+            for ($i=0; $i -lt 60; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $response = Invoke-RestMethod 'http://127.0.0.1:18787/api/state' -TimeoutSec 2
+                return @{ Process=$p; State=$response }
+              } catch { if ($p.HasExited) { throw 'EXE exited before the interface opened' } }
+            }
+            throw 'Bundled interface did not open within 30 seconds'
+          }
+          $first = Start-App
+          try {
+            if ($first.State.settings.name -ne 'Юрий') { throw 'Profile missing on first launch' }
+            $page = Invoke-WebRequest 'http://127.0.0.1:18787/' -UseBasicParsing
+            if ($page.StatusCode -ne 200 -or $page.Content -notmatch 'Первый запуск') { throw 'Wizard not visible' }
+            $body = @{name='Юрий';city='Ростов-на-Дону';wizard_step=2;auto=$false} | ConvertTo-Json
+            Invoke-RestMethod 'http://127.0.0.1:18787/api/settings' -Method Post -Body $body -ContentType 'application/json' | Out-Null
+          } finally { taskkill /T /F /PID $first.Process.Id 2>$null | Out-Null }
+          Start-Sleep -Seconds 2
+          $second = Start-App
+          try {
+            if ($second.State.settings.wizard_step -ne 2) { throw 'Settings did not survive restart' }
+            if (-not $second.State.telegram_user.available) { throw 'Telethon not bundled' }
+            if (-not $second.State.settings.telegram) { throw 'Telegram campaign setting missing' }
+          } finally { taskkill /T /F /PID $second.Process.Id 2>$null | Out-Null }
+      - name: Smoke test native window, screens, screenshot and relaunch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:YURI_DATA_DIR = Join-Path $env:RUNNER_TEMP 'YuriCRM-gui-smoke'
+          $exe = Join-Path $PWD 'dist\YuriCRM.exe'
+          $first = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru
+          if (-not $first.WaitForExit(180000)) { taskkill /T /F /PID $first.Id 2>$null | Out-Null; throw 'Native window smoke timed out' }
+          if ($first.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native window failed' }
+          if (-not (Test-Path (Join-Path $env:YURI_DATA_DIR 'gui-smoke-ok.txt'))) { throw 'Screens did not load inside the native window' }
+          $shot = Join-Path $env:YURI_DATA_DIR 'YuriCRM-window.png'
+          if (-not (Test-Path $shot)) { throw 'Native window screenshot missing' }
+          Copy-Item $shot (Join-Path $PWD 'dist\YuriCRM-window.png')
+          $again = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru
+          if (-not $again.WaitForExit(180000)) { taskkill /T /F /PID $again.Id 2>$null | Out-Null; throw 'Native window relaunch timed out' }
+          if ($again.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native window failed on relaunch' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: YuriCRM-Windows-x64
+          path: dist/YuriCRM.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: YuriCRM-real-window
+          path: dist/YuriCRM-window.png
+          if-no-files-found: warn
+
