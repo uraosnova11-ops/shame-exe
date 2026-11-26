@@ -74,9 +74,9 @@ jobs:
             Start-Sleep -Milliseconds 500
             $p.Refresh()
             if ($p.MainWindowHandle -ne [IntPtr]::Zero) { break }
-            if ($p.HasExited) { throw 'EXE exited before native window appeared' }
+            if ($p.HasExited) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'EXE exited before native window appeared' }
           }
-          if ($p.MainWindowHandle -eq [IntPtr]::Zero -or $p.MainWindowTitle -notlike '*YuriCRM*') { throw 'Native YuriCRM window not found' }
+          if ($p.MainWindowHandle -eq [IntPtr]::Zero -or $p.MainWindowTitle -notlike '*YuriCRM*') { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native YuriCRM window not found' }
           Add-Type -AssemblyName System.Drawing
           Add-Type -TypeDefinition @'
           using System;
@@ -104,13 +104,15 @@ jobs:
           $again = Start-Process -FilePath (Join-Path $PWD 'dist\YuriCRM.exe') -ArgumentList '--gui-smoke' -PassThru -Wait
           if ($again.ExitCode -ne 0) { throw 'Embedded window failed on second launch' }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: YuriCRM-Windows-x64
           path: dist/YuriCRM.exe
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: YuriCRM-real-window
           path: dist/YuriCRM-window.png
-          if-no-files-found: error
+          if-no-files-found: warn
 
