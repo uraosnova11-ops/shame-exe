@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from telegram_user import UserTelegram, TelegramUnavailable, TelegramPaused, protect, unprotect
+from windows_secrets import SecretStorageError, protect, unprotect
 import vk_user
 
 ROOT = Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))
@@ -39,7 +39,6 @@ STOP = threading.Event()
 PAUSE_SEND = threading.Event()
 
 DEFAULT = dict(name='Юрий', city='Ростов-на-Дону', niches='пекарня,салон красоты,барбершоп,кафе,цветы,автосервис', districts='', review_threshold=30, daily_limit=10, demo_daily=5, demo_retention_days=30, allowed_hours='10-18', services='Создание и обновление сайтов для малого бизнеса', portfolio='', prices='', promises='', max_analysis_per_day=30, daily_budget_rub=0, auto=False, telegram=False, vk=True, max=False, yandex_storage_allowed=False, test_sent=False, wizard_step=1, public_url='')
-TG = UserTelegram(DATA/'telegram.dpapi')
 SECRETS_FILE = DATA/'keys.dpapi'
 
 def secret_store():
@@ -49,10 +48,6 @@ def secret_store():
 def save_secrets(x):
     tmp=SECRETS_FILE.with_suffix('.tmp');tmp.write_bytes(protect(json.dumps(x).encode()))
     os.replace(tmp,SECRETS_FILE)
-def telegram_inbound(chat,text,remote):
-    with db() as c: inbound(c,'telegram',chat,text,remote)
-TG.on_message=telegram_inbound
-
 def now(): return datetime.now(TZ).isoformat(timespec='seconds')
 def today(): return datetime.now(TZ).date().isoformat()
 class Connection(sqlite3.Connection):
@@ -289,7 +284,7 @@ def make_message(row, s):
 
 def send(channel, chat, body, image_path=None):
     if channel=='vk':
-        return vk_user.send(secret_store().get('VK_TOKEN'),chat,body)
+        return vk_user.send(secret_store().get('VK_TOKEN'),chat,body,image_path)
     if channel=='max':
         token=secret_store().get('MAX_BOT_TOKEN') or os.environ.get('MAX_BOT_TOKEN')
         if not token: raise ValueError('Не настроен MAX_BOT_TOKEN')
@@ -328,9 +323,7 @@ def perform(c, job):
         if not hrs or not int(hrs[1])<=hour<int(hrs[2]): raise ValueError('Вне разрешённых часов (Москва)')
         body=make_message(row,s)
         image_path=None
-        if row['channel']=='vk' and not (s.get('public_url') or PUBLIC_URL):
-            raise ValueError('Для отправки в VK укажите работающую публичную HTTPS-ссылку на демо.')
-        if row['channel']=='vk':
+        if row['channel']=='vk' and (s.get('public_url') or PUBLIC_URL):
             preview=(s.get('public_url') or PUBLIC_URL).rstrip('/')+row['demo_path']
             try:
                 with urllib.request.urlopen(preview,timeout=8) as response:
@@ -339,6 +332,8 @@ def perform(c, job):
                     raise ValueError('Внешняя ссылка не открывает подготовленный демосайт.')
             except (OSError,urllib.error.URLError) as exc:
                 raise ValueError('Демосайт не открывается по публичной HTTPS-ссылке. Настройте размещение перед отправкой.') from exc
+        if row['channel']=='vk' and not (s.get('public_url') or PUBLIC_URL):
+            image_path=str(DATA/'demos'/Path(row['demo_path']).with_suffix('.png').name)
         mid=c.execute("INSERT INTO messages(company_id,channel,direction,body,state,created_at) VALUES(?,?,'out',?,'unknown',?)",(cid,row['channel'],body,now())).lastrowid
         # An ambiguous timeout must never result in an automatic retry of an outward message.
         try:
@@ -347,7 +342,7 @@ def perform(c, job):
             remote,peer_id=result if isinstance(result,tuple) else (result,None)
         except Exception as e:
             c.execute('UPDATE messages SET state=? WHERE id=?',('unknown',mid))
-            if isinstance(e,(TelegramPaused,vk_user.VKPaused)):
+            if isinstance(e,vk_user.VKPaused):
                 PAUSE_SEND.set();s['auto']=False
                 c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
                 event(c,'auto_stopped','Ограничение канала; очередь остановлена')
@@ -513,31 +508,6 @@ class Handler(BaseHTTPRequestHandler):
                     event(c,'vk_test',f'{peer}: {mid}');out={'accepted':True,'message_id':mid,'recipient':name}
                 elif path.startswith('/api/telegram/'):
                     raise ValueError('Telegram отключён для этой кампании. Подключите VK.')
-                elif path=='/api/telegram/begin':
-                    out=TG.begin(x.get('api_id',''),x.get('api_hash',''),x.get('phone',''))
-                    event(c,'telegram_login','Код запрошен')
-                elif path=='/api/telegram/code':
-                    out=TG.code(x.get('code',''))
-                    event(c,'telegram_login',out['step'])
-                elif path=='/api/telegram/password':
-                    out=TG.password(x.get('password',''))
-                    event(c,'telegram_login',out['step'])
-                elif path=='/api/telegram/disconnect':
-                    PAUSE_SEND.set()
-                    out=TG.disconnect()
-                    s=settings(c);s['auto']=False;s['test_sent']=False
-                    c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
-                    event(c,'telegram_disconnect','Сессия удалена')
-                elif path=='/api/telegram/test':
-                    if not TG.status()['connected']: raise ValueError('Сначала подключите личный Telegram-аккаунт')
-                    recipient=str(x.get('recipient','')).strip()
-                    if not x.get('confirmed'): raise ValueError('Подтвердите, что тестовый получатель согласен получить сообщение')
-                    if not re.fullmatch(r'@[A-Za-z0-9_]{5,32}',recipient): raise ValueError('Введите @username тестового пользователя')
-                    mid,peer=TG.send(recipient,'Тест приложения Юрия. Это проверка отправки с моего пользовательского аккаунта Telegram. Ответьте «получено», если сообщение пришло.')
-                    s=settings(c);s['test_sent']=True
-                    c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
-                    event(c,'test_send',f'Отправлено Telegram сообщение #{mid} тестовому ID {peer}')
-                    out={'accepted':True,'message_id':mid,'recipient_id':peer,'note':'Telegram принял сообщение; подтвердите получение на втором аккаунте.'}
                 elif path=='/api/integrations':
                     secrets_now=secret_store()
                     for k in ('DGIS_KEY','YANDEX_MAPS_KEY','MAX_BOT_TOKEN'):
@@ -602,11 +572,11 @@ class Handler(BaseHTTPRequestHandler):
                 else: self.send_error(404);return
             self.respond(out)
         except Exception as e:
-            message=str(e) if isinstance(e,(ValueError,TelegramUnavailable,TelegramPaused)) else 'Операция не выполнена. Проверьте настройки и повторите попытку.'
+            message=str(e) if isinstance(e,(ValueError,SecretStorageError)) else 'Операция не выполнена. Проверьте настройки и повторите попытку.'
             self.respond({'error':message[:400]},400)
 
 def run_server():
-    init();TG.start()
+    init()
     threading.Thread(target=worker,daemon=True).start()
     threading.Thread(target=polling,daemon=True).start()
     threading.Thread(target=discovery,daemon=True).start()

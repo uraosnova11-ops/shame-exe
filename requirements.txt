@@ -1,1 +1,1 @@
-Telethon==1.45.0
+# The VK and map integrations use the Python standard library.

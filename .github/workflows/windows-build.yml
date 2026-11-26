@@ -24,7 +24,7 @@ jobs:
       - name: Unit tests
         run: python -m unittest -v test_app.py
       - name: Build windowed executable
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --add-data "index.html;." --collect-all telethon launcher.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --add-data "index.html;." launcher.py
       - name: Smoke test bundled EXE and persisted settings
         shell: pwsh
         run: |

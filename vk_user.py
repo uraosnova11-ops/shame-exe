@@ -1,8 +1,10 @@
 """VK user API transport. Access token is stored by the caller with Windows DPAPI."""
 import json
 import re
+import secrets
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 API = 'https://api.vk.com/method/'
 VERSION = '5.199'
@@ -41,10 +43,30 @@ def community(token, address):
     if not groups or groups[0].get('is_closed',0): raise VKError('Сообщество не найдено или закрыто.')
     return -int(groups[0]['id']),groups[0].get('name','')
 
-def send(token, peer, message):
+def upload_message_photo(token,peer,image_path):
+    image=Path(image_path)
+    if not image.is_file() or image.stat().st_size>10_000_000: raise VKError('Скриншот демо отсутствует или слишком велик.')
+    server=call('photos.getMessagesUploadServer',token,peer_id=peer)
+    address=server.get('upload_url','') if isinstance(server,dict) else ''
+    target=urllib.parse.urlparse(address)
+    if target.scheme!='https' or not (target.hostname or '').endswith(('.vk.com','.vk-cdn.net')):
+        raise VKError('VK не предоставил безопасный адрес загрузки изображения.')
+    boundary='----YuriCRM'+secrets.token_hex(12)
+    payload=(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="demo.png"\r\nContent-Type: image/png\r\n\r\n').encode()+image.read_bytes()+(f'\r\n--{boundary}--\r\n').encode()
+    request=urllib.request.Request(address,data=payload,headers={'Content-Type':'multipart/form-data; boundary='+boundary})
+    try:
+        with urllib.request.urlopen(request,timeout=30) as response: uploaded=json.load(response)
+    except Exception as exc: raise VKError('VK не принял изображение демо. Проверьте сеть и повторите позже.') from exc
+    saved=call('photos.saveMessagesPhoto',token,photo=uploaded['photo'],server=uploaded['server'],hash=uploaded['hash'])
+    if not saved: raise VKError('VK не сохранил изображение демо.')
+    photo=saved[0]
+    return f"photo{photo['owner_id']}_{photo['id']}"+(f"_{photo['access_key']}" if photo.get('access_key') else '')
+
+def send(token, peer, message, image_path=None):
     peer=int(peer)
     if peer>=0: raise VKError('Адресатом может быть только деловое сообщество VK.')
-    response=call('messages.send',token,peer_id=peer,random_id=0,message=message)
+    attachment=upload_message_photo(token,peer,image_path) if image_path else ''
+    response=call('messages.send',token,peer_id=peer,random_id=0,message=message,**({'attachment':attachment} if attachment else {}))
     if not isinstance(response,int): raise VKError('VK не подтвердил отправку.')
     return str(response)
 

@@ -65,6 +65,9 @@ class FlowTest(unittest.TestCase):
         with patch.object(vk_user.urllib.request,'urlopen',return_value=io.BytesIO(b'{"error":{"error_code":6}}')):
             with self.assertRaises(vk_user.VKPaused):
                 vk_user.send('test-token',-123,'тест')
+        with patch.object(vk_user,'upload_message_photo',return_value='photo1_2'),patch.object(vk_user,'call',return_value=52) as api:
+            self.assertEqual(vk_user.send('test-token',-123,'пример','demo.png'),'52')
+            self.assertEqual(api.call_args.kwargs['attachment'],'photo1_2')
 
 if __name__=='__main__': unittest.main()
 
