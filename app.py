@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from telegram_user import UserTelegram, TelegramUnavailable, TelegramPaused, protect, unprotect
+import vk_user
 
 ROOT = Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))
 DATA = Path(os.environ.get('YURI_DATA_DIR', str(Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) / 'YuriCRM')))
@@ -37,7 +38,7 @@ TZ = timezone(timedelta(hours=3))  # Moscow has used UTC+3 year-round since 2014
 STOP = threading.Event()
 PAUSE_SEND = threading.Event()
 
-DEFAULT = dict(name='Юрий', city='Ростов-на-Дону', niches='пекарня,салон красоты,барбершоп,кафе,цветы,автосервис', districts='', review_threshold=30, daily_limit=10, demo_daily=5, demo_retention_days=30, allowed_hours='10-18', services='Создание и обновление сайтов для малого бизнеса', portfolio='', prices='', promises='', max_analysis_per_day=30, daily_budget_rub=0, auto=False, telegram=True, max=False, yandex_storage_allowed=False, test_sent=False, wizard_step=1, public_url='')
+DEFAULT = dict(name='Юрий', city='Ростов-на-Дону', niches='пекарня,салон красоты,барбершоп,кафе,цветы,автосервис', districts='', review_threshold=30, daily_limit=10, demo_daily=5, demo_retention_days=30, allowed_hours='10-18', services='Создание и обновление сайтов для малого бизнеса', portfolio='', prices='', promises='', max_analysis_per_day=30, daily_budget_rub=0, auto=False, telegram=False, vk=True, max=False, yandex_storage_allowed=False, test_sent=False, wizard_step=1, public_url='')
 TG = UserTelegram(DATA/'telegram.dpapi')
 SECRETS_FILE = DATA/'keys.dpapi'
 
@@ -97,10 +98,17 @@ def init():
             c.execute("ALTER TABLE companies ADD COLUMN contact_evidence TEXT DEFAULT ''")
             # Existing Bot API chat IDs must never be re-used as user-account recipients.
             c.execute("UPDATE companies SET channel='telegram_bot_legacy',chat_verified=0,consent=0 WHERE channel='telegram'")
+        # This campaign now uses social channels, never a legacy Telegram recipient.
+        c.execute("UPDATE jobs SET state='cancelled' WHERE kind='send' AND state='queued' AND company_id IN (SELECT id FROM companies WHERE channel LIKE 'telegram%')")
         old=settings(c)
         merged={**DEFAULT,**old}
+        merged['telegram']=False
+        if 'vk' not in old: merged['vk']=True
+        merged['auto']=False if old.get('telegram') and not old.get('vk') else merged['auto']
+        merged['test_sent']=False if old.get('telegram') and not old.get('vk') else merged['test_sent']
         c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(merged,ensure_ascii=False),))
         c.execute("UPDATE jobs SET state='queued',next_at=0 WHERE state='running'")
+    (DATA/'telegram.dpapi').unlink(missing_ok=True)
 
 def settings(c): return json.loads(c.execute('SELECT body FROM settings WHERE id=1').fetchone()['body'])
 def event(c, action, detail): c.execute('INSERT INTO events(at,action,detail) VALUES(?,?,?)',(now(),action,str(detail)[:500]))
@@ -128,6 +136,8 @@ def add_company(c, x):
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',vals)
     m=re.search(r'(?:https?://)?t\.me/([A-Za-z0-9_]{5,32})',str(x.get('telegram_public','')))
     if m: c.execute('UPDATE companies SET telegram_username=? WHERE id=?',('@'+m[1],cur.lastrowid))
+    vk=re.search(r'https?://(?:m\.)?vk\.com/(?:club\d+|public\d+|[A-Za-z0-9_.]{5,32})',str(x.get('contacts','')),re.I)
+    if vk: c.execute('UPDATE companies SET contact_evidence=? WHERE id=?',(vk[0],cur.lastrowid))
     event(c,'company_added',f'{cur.lastrowid}: {name} ({source})')
     if settings(c)['auto']: queue(c,'analyze',cur.lastrowid)
     return cur.lastrowid
@@ -278,8 +288,8 @@ def make_message(row, s):
     return f"Здравствуйте! Меня зовут {s['name']}, я занимаюсь созданием сайтов для бизнеса в Ростове-на-Дону. Подготовил {demo}. Сделал акцент на {focus}. Если вам интересно, можем обсудить сайт для вас. Если такие предложения не нужны, напишите «стоп»."
 
 def send(channel, chat, body, image_path=None):
-    if channel=='telegram':
-        return TG.send(chat,body,image_path)
+    if channel=='vk':
+        return vk_user.send(secret_store().get('VK_TOKEN'),chat,body)
     if channel=='max':
         token=secret_store().get('MAX_BOT_TOKEN') or os.environ.get('MAX_BOT_TOKEN')
         if not token: raise ValueError('Не настроен MAX_BOT_TOKEN')
@@ -310,7 +320,7 @@ def perform(c, job):
             c.execute("UPDATE companies SET status='в очереди' WHERE id=?",(cid,))
     elif job['kind']=='send':
         if PAUSE_SEND.is_set() or not s['auto'] or not s.get(row['channel'],False): raise ValueError('Кампания или канал выключены')
-        recipient=row['telegram_username'] if row['channel']=='telegram' else row['chat_id']
+        recipient=row['chat_id']
         if row['do_not_contact'] or not (row['chat_verified'] and row['consent'] and recipient): raise ValueError('Нет подтверждённого делового контакта и разрешения')
         if c.execute("SELECT 1 FROM messages WHERE company_id=? AND direction='out' AND state IN ('sent','unknown')",(cid,)).fetchone(): return
         if count(c,'sent')>=int(s['daily_limit']): raise ValueError('Дневной лимит отправки')
@@ -318,8 +328,17 @@ def perform(c, job):
         if not hrs or not int(hrs[1])<=hour<int(hrs[2]): raise ValueError('Вне разрешённых часов (Москва)')
         body=make_message(row,s)
         image_path=None
-        if row['channel']=='telegram' and not (s.get('public_url') or PUBLIC_URL):
-            image_path=str(DATA/'demos'/Path(row['demo_path']).with_suffix('.png').name)
+        if row['channel']=='vk' and not (s.get('public_url') or PUBLIC_URL):
+            raise ValueError('Для отправки в VK укажите работающую публичную HTTPS-ссылку на демо.')
+        if row['channel']=='vk':
+            preview=(s.get('public_url') or PUBLIC_URL).rstrip('/')+row['demo_path']
+            try:
+                with urllib.request.urlopen(preview,timeout=8) as response:
+                    page=response.read(4096).decode('utf-8','replace')
+                if 'НЕЗАВИСИМАЯ КОНЦЕПЦИЯ' not in page:
+                    raise ValueError('Внешняя ссылка не открывает подготовленный демосайт.')
+            except (OSError,urllib.error.URLError) as exc:
+                raise ValueError('Демосайт не открывается по публичной HTTPS-ссылке. Настройте размещение перед отправкой.') from exc
         mid=c.execute("INSERT INTO messages(company_id,channel,direction,body,state,created_at) VALUES(?,?,'out',?,'unknown',?)",(cid,row['channel'],body,now())).lastrowid
         # An ambiguous timeout must never result in an automatic retry of an outward message.
         try:
@@ -328,10 +347,10 @@ def perform(c, job):
             remote,peer_id=result if isinstance(result,tuple) else (result,None)
         except Exception as e:
             c.execute('UPDATE messages SET state=? WHERE id=?',('unknown',mid))
-            if isinstance(e,TelegramPaused):
+            if isinstance(e,(TelegramPaused,vk_user.VKPaused)):
                 PAUSE_SEND.set();s['auto']=False
                 c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
-                event(c,'auto_stopped','Ограничение Telegram; очередь остановлена')
+                event(c,'auto_stopped','Ограничение канала; очередь остановлена')
             raise RuntimeError('Исход отправки требует ручной проверки: '+str(e)[:160])
         c.execute("UPDATE messages SET state='sent',remote_id=? WHERE id=?",(remote,mid))
         c.execute("UPDATE companies SET status='отправлено',chat_id=COALESCE(?,chat_id) WHERE id=?",(peer_id,cid))
@@ -397,11 +416,23 @@ def poll_max(c):
         elif u.get('update_type')=='bot_started': inbound(c,'max',u.get('user',{}).get('user_id'),'/start '+u.get('payload',''),'start-'+str(u.get('timestamp')))
     if data.get('marker'): c.execute("INSERT INTO offsets VALUES('max',?) ON CONFLICT(channel) DO UPDATE SET value=excluded.value",(str(data['marker']),))
 
+def poll_vk(c):
+    token=secret_store().get('VK_TOKEN')
+    if not token: return
+    for item in vk_user.conversations(token):
+        conversation=item.get('conversation') or {}
+        peer=conversation.get('peer') or {}
+        peer_id=peer.get('id')
+        if peer.get('type')!='group' or not peer_id: continue
+        message=item.get('last_message') or {}
+        if message.get('out') or not message.get('text'): continue
+        inbound(c,'vk',peer_id,message['text'],message.get('id'))
+
 def polling():
     while not STOP.wait(12):
         with db() as c:
             s=settings(c)
-            for channel,fn in [('max',poll_max)]:
+            for channel,fn in [('max',poll_max),('vk',poll_vk)]:
                 if s.get(channel):
                     try: fn(c)
                     except Exception as e: event(c,'poll_error',f'{channel}: {str(e)[:120]}')
@@ -454,12 +485,35 @@ class Handler(BaseHTTPRequestHandler):
                 for k in ('analysis','reasons'): r[k]=json.loads(r[k])
                 r.pop('code',None)
             secrets_now=secret_store()
-            self.respond(dict(settings=settings(c),companies=companies,jobs=[dict(r) for r in c.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 100')],messages=[dict(r) for r in c.execute('SELECT * FROM messages ORDER BY id DESC LIMIT 200')],events=[dict(r) for r in c.execute('SELECT * FROM events ORDER BY id DESC LIMIT 50')],counters={x:count(c,x) for x in ('analysis','demo','sent')},public_url=settings(c).get('public_url') or PUBLIC_URL,telegram_user=TG.status(),integrations={x:bool(secrets_now.get(x) or os.environ.get(x)) for x in ('DGIS_KEY','YANDEX_MAPS_KEY','MAX_BOT_TOKEN')}))
+            self.respond(dict(settings=settings(c),companies=companies,jobs=[dict(r) for r in c.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 100')],messages=[dict(r) for r in c.execute('SELECT * FROM messages ORDER BY id DESC LIMIT 200')],events=[dict(r) for r in c.execute('SELECT * FROM events ORDER BY id DESC LIMIT 50')],counters={x:count(c,x) for x in ('analysis','demo','sent')},public_url=settings(c).get('public_url') or PUBLIC_URL,vk_user=secrets_now.get('VK_PROFILE'),integrations={x:bool(secrets_now.get(x) or os.environ.get(x)) for x in ('DGIS_KEY','YANDEX_MAPS_KEY','MAX_BOT_TOKEN','VK_TOKEN')}))
     def do_POST(self):
         try:
             x=self.read(); path=urllib.parse.urlparse(self.path).path
             with db() as c:
-                if path=='/api/telegram/begin':
+                if path=='/api/vk/connect':
+                    token=str(x.get('token','')).strip()
+                    if not token: raise ValueError('Укажите токен доступа VK с правом messages.')
+                    profile=vk_user.identity(token)
+                    secrets_now=secret_store();secrets_now.update(VK_TOKEN=token,VK_PROFILE=profile);save_secrets(secrets_now)
+                    s=settings(c);s['test_sent']=False;s['auto']=False
+                    c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
+                    event(c,'vk_connect',str(profile['id']));out={'profile':profile}
+                elif path=='/api/vk/disconnect':
+                    secrets_now=secret_store();secrets_now.pop('VK_TOKEN',None);secrets_now.pop('VK_PROFILE',None);save_secrets(secrets_now)
+                    s=settings(c);s['auto']=False;s['test_sent']=False
+                    c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
+                    PAUSE_SEND.set();event(c,'vk_disconnect','Токен удалён');out={'ok':True}
+                elif path=='/api/vk/test':
+                    if not x.get('confirmed'): raise ValueError('Подтвердите согласие тестового получателя.')
+                    token=secret_store().get('VK_TOKEN')
+                    peer,name=vk_user.community(token,str(x.get('recipient','')))
+                    mid=vk_user.send(token,peer,'Тест приложения Юрия. Проверка отправки с подключённого аккаунта VK. Ответьте «получено», если сообщение пришло.')
+                    s=settings(c);s['test_sent']=True
+                    c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
+                    event(c,'vk_test',f'{peer}: {mid}');out={'accepted':True,'message_id':mid,'recipient':name}
+                elif path.startswith('/api/telegram/'):
+                    raise ValueError('Telegram отключён для этой кампании. Подключите VK.')
+                elif path=='/api/telegram/begin':
                     out=TG.begin(x.get('api_id',''),x.get('api_hash',''),x.get('phone',''))
                     event(c,'telegram_login','Код запрошен')
                 elif path=='/api/telegram/code':
@@ -495,8 +549,9 @@ class Handler(BaseHTTPRequestHandler):
                     s=settings(c)
                     for k,v in x.items():
                         if k in s and k not in ('test_sent',): s[k]=v
-                    if s['auto'] and (not TG.status()['connected'] or not s['test_sent']):
-                        raise ValueError('Перед включением кампании подключите личный Telegram и отправьте тестовое сообщение')
+                    if s['auto'] and (not secret_store().get('VK_TOKEN') or not s['test_sent']):
+                        raise ValueError('Перед включением кампании подключите VK и отправьте тестовое сообщение')
+                    s['telegram']=False
                     if not s['auto']: PAUSE_SEND.set()
                     else: PAUSE_SEND.clear()
                     c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),));event(c,'settings','Изменены настройки');out={'ok':True}
@@ -527,11 +582,13 @@ class Handler(BaseHTTPRequestHandler):
                 elif path=='/api/chat':
                     cid=int(x['id']); row=c.execute('SELECT * FROM companies WHERE id=?',(cid,)).fetchone()
                     if not row: raise ValueError('Компания не найдена')
-                    channel=x.get('channel','telegram'); contact=str(x.get('username','')).strip()
-                    if channel!='telegram' or not re.fullmatch(r'@[A-Za-z0-9_]{5,32}',contact): raise ValueError('Укажите деловой @username Telegram')
+                    channel=x.get('channel','vk'); contact=str(x.get('username','')).strip()
+                    if channel!='vk': raise ValueError('Для этого способа используйте деловое сообщество VK.')
                     evidence=str(x.get('evidence','')).strip()
                     if not x.get('verified') or len(evidence)<8: raise ValueError('Укажите источник, подтверждающий связь контакта с компанией')
-                    c.execute('UPDATE companies SET channel=?,telegram_username=?,chat_verified=1,contact_evidence=? WHERE id=?',(channel,contact,evidence[:500],cid))
+                    peer,community_name=vk_user.community(secret_store().get('VK_TOKEN'),contact)
+                    if not re.search(r'[\wа-яё]{3,}',community_name,re.I): raise ValueError('Проверьте название сообщества VK.')
+                    c.execute('UPDATE companies SET channel=?,chat_id=?,chat_verified=1,contact_evidence=? WHERE id=?',(channel,str(peer),evidence[:500],cid))
                     if row['consent'] and row['demo_path'] and settings(c)['auto']: queue(c,'send',cid)
                     event(c,'chat_verified',str(cid));out={'ok':True}
                 elif path=='/api/consent':
@@ -561,3 +618,4 @@ if __name__=='__main__':
     print(f'Юрий CRM: http://{HOST}:{PORT}',flush=True)
     try: server.serve_forever()
     finally: STOP.set();server.server_close()
+
