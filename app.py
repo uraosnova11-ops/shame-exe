@@ -463,6 +463,10 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b'{}')
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
+        if path in ('/desktop.css','/desktop.js'):
+            name=path[1:]
+            data=(ROOT/name).read_bytes()
+            self.send_response(200);self.send_header('Content-Type','text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
         if path=='/':
             data=(ROOT/'index.html').read_bytes(); self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
         if path.startswith('/demo/') and re.fullmatch(r'/demo/[\w-]+\.html',path):

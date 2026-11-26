@@ -1,103 +1,95 @@
-"""Small native Windows shell for the local YuriCRM web interface."""
-import ctypes
+"""Native YuriCRM window. The HTTP service is private to this process."""
+import os
+from pathlib import Path
+import subprocess
 import sys
 import threading
+import time
 import traceback
-import webbrowser
-from ctypes import wintypes
+
+if '--smoke' not in sys.argv:
+    os.environ.setdefault('YURI_PORT','0')
 
 import app
 
 
-class POINT(ctypes.Structure):
-    _fields_ = [('x', wintypes.LONG), ('y', wintypes.LONG)]
-
-
-class MSG(ctypes.Structure):
-    _fields_ = [('hwnd', wintypes.HWND), ('message', wintypes.UINT),
-                ('wParam', ctypes.c_size_t), ('lParam', ctypes.c_ssize_t),
-                ('time', wintypes.DWORD), ('pt', POINT), ('lPrivate', wintypes.DWORD)]
-
-
-def window():
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
-    user32.CreateWindowExW.restype = wintypes.HWND
-    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR,
-        wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU,
-        wintypes.HINSTANCE, ctypes.c_void_p]
-    user32.GetMessageW.argtypes = [ctypes.POINTER(MSG), wintypes.HWND,
-                                   wintypes.UINT, wintypes.UINT]
-    user32.GetMessageW.restype = wintypes.BOOL
-    user32.DispatchMessageW.argtypes = [ctypes.POINTER(MSG)]
-    user32.DispatchMessageW.restype = ctypes.c_ssize_t
-    instance = kernel32.GetModuleHandleW(None)
-    style = 0x00CF0000 | 0x10000000  # WS_OVERLAPPEDWINDOW | WS_VISIBLE
-    hwnd = user32.CreateWindowExW(0, 'STATIC', 'Юрий — локальные клиенты',
-                                   style, 180, 150, 480, 230, None, None,
-                                   instance, None)
-    if not hwnd:
-        raise OSError('Не удалось открыть окно приложения')
-    child_style = 0x40000000 | 0x10000000  # WS_CHILD | WS_VISIBLE
-    user32.CreateWindowExW(0, 'STATIC',
-        'Панель работает в браузере. Закрытие окна остановит фоновые задачи.',
-        child_style, 22, 35, 425, 55, hwnd, None, instance, None)
-    user32.CreateWindowExW(0, 'BUTTON', 'Открыть панель',
-        child_style | 0x00000001, 22, 105, 175, 38, hwnd,
-        ctypes.c_void_p(100), instance, None)
-    return user32, hwnd
+def ensure_webview_runtime():
+    """Install the bundled Microsoft x64 offline runtime for this Windows user if needed."""
+    import winreg
+    product=r'{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    locations=((winreg.HKEY_LOCAL_MACHINE,rf'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{product}'),
+               (winreg.HKEY_CURRENT_USER,rf'Software\Microsoft\EdgeUpdate\Clients\{product}'))
+    def installed():
+        for hive,path in locations:
+            try:
+                with winreg.OpenKey(hive,path) as key:
+                    version=winreg.QueryValueEx(key,'pv')[0]
+                    if version and version!='0.0.0.0': return True
+            except OSError: pass
+        return False
+    if installed(): return
+    path=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+    if not path.exists(): raise RuntimeError('В комплекте отсутствует компонент WebView2. Скачайте полную версию YuriCRM.')
+    try:
+        subprocess.run([str(path),'/silent','/install'],check=False,timeout=300,
+                       creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    except (OSError,subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('Не удалось установить встроенный компонент WebView2. Проверьте права учётной записи Windows.') from exc
+    if not installed(): raise RuntimeError('Windows не завершила установку WebView2. Перезагрузите компьютер и запустите YuriCRM снова.')
 
 
 def main():
-    if '--smoke' in sys.argv:
-        server = app.run_server()
-        try:
-            server.serve_forever()
-        finally:
-            app.STOP.set()
-            server.server_close()
-        return
-
-    user32, hwnd = window()
-    if '--gui-smoke' in sys.argv:
-        user32.DestroyWindow(hwnd)
-        return
+    server=app.run_server()
+    thread=threading.Thread(target=server.serve_forever,name='YuriCRM-HTTP',daemon=True)
+    thread.start()
     try:
-        server = app.run_server()
-    except Exception:
-        user32.MessageBoxW(hwnd,
-            'Не удалось открыть локальную панель. Закройте другой экземпляр и запустите приложение снова.',
-            'Ошибка запуска', 0x10)
-        user32.DestroyWindow(hwnd)
-        return
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f'http://{app.HOST}:{app.PORT}'
-    webbrowser.open(url)
-    try:
-        message = MSG()
-        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
-            if message.hwnd == hwnd and message.message == 0x10:  # WM_CLOSE
-                break
-            if message.hwnd == hwnd and message.message == 0x111 and message.wParam & 0xffff == 100:
-                webbrowser.open(url)
-            user32.TranslateMessage(ctypes.byref(message))
-            user32.DispatchMessageW(ctypes.byref(message))
+        if '--smoke' in sys.argv:
+            thread.join()
+            return
+        ensure_webview_runtime()
+        import webview
+        url=f'http://127.0.0.1:{server.server_address[1]}/'
+        window=webview.create_window('YuriCRM — поиск клиентов',url,width=1320,height=860,
+                                     min_size=(880,620),background_color='#f5f7f8',
+                                     text_select=True,confirm_close=False)
+        def gui_smoke():
+            if '--gui-smoke' not in sys.argv: return
+            try:
+                ready=False
+                for _ in range(30):
+                    try:
+                        ready=window.evaluate_js("document.querySelectorAll('.nav-item').length === 6")
+                        if ready: break
+                    except Exception: pass
+                    time.sleep(.3)
+                if not ready: raise RuntimeError('Главные экраны не открылись во встроенном окне')
+                screens=window.evaluate_js("['companies','analysis','demos','messages','campaign','settings'].every(k => { desktopNavigate(k); return document.querySelector('.desktop-page.active').dataset.page === k })")
+                if not screens: raise RuntimeError('Не все экраны приложения доступны')
+                window.evaluate_js("desktopNavigate('companies')")
+                (app.DATA/'gui-smoke-ok.txt').write_text('Встроенное окно и интерфейс открыты',encoding='utf-8')
+                time.sleep(10)
+            finally:
+                window.destroy()
+        webview.start(gui_smoke,gui='edgechromium',debug=False)
+        if '--gui-smoke' in sys.argv and not (app.DATA/'gui-smoke-ok.txt').exists():
+            raise RuntimeError('Встроенный интерфейс не прошёл проверку')
     finally:
         app.STOP.set()
         server.shutdown()
         server.server_close()
-        user32.DestroyWindow(hwnd)
+        thread.join(timeout=5)
 
 
-if __name__ == '__main__':
+if __name__=='__main__':
     try:
         main()
     except Exception as exc:
-        app.DATA.mkdir(parents=True, exist_ok=True)
-        frames = '\n'.join(f'{f.filename}:{f.lineno} in {f.name}'
-                           for f in traceback.extract_tb(exc.__traceback__))
-        (app.DATA / 'startup-error.txt').write_text(
-            f'{type(exc).__name__}: {exc}\n{frames}', encoding='utf-8')
-        raise
+        app.DATA.mkdir(parents=True,exist_ok=True)
+        frames='\n'.join(f'{f.filename}:{f.lineno} in {f.name}' for f in traceback.extract_tb(exc.__traceback__))
+        (app.DATA/'startup-error.txt').write_text(f'{type(exc).__name__}: {exc}\n{frames}',encoding='utf-8')
+        if '--smoke' not in sys.argv:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None,
+                'Не удалось открыть окно YuriCRM. Проверьте, что Microsoft Edge WebView2 установлен, и повторите запуск. Подробности: %LOCALAPPDATA%\\YuriCRM\\startup-error.txt',
+                'YuriCRM — ошибка запуска',0x10)
+        sys.exit(1)
