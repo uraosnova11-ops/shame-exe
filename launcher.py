@@ -3,6 +3,7 @@ import threading
 import webbrowser
 import sys
 import tkinter as tk
+import traceback
 from tkinter import messagebox
 import app
 
@@ -11,6 +12,9 @@ def main():
         server=app.run_server()
         try: server.serve_forever()
         finally: app.STOP.set();server.server_close()
+        return
+    if '--gui-smoke' in sys.argv:
+        root=tk.Tk();root.update();root.destroy()
         return
     root=tk.Tk();root.title('Юрий · локальные клиенты');root.geometry('450x230')
     root.configure(bg='#f5f4f0')
@@ -29,4 +33,11 @@ def main():
     root.after(350,lambda:webbrowser.open(url))
     root.mainloop()
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+    try: main()
+    except Exception as exc:
+        from pathlib import Path
+        app.DATA.mkdir(parents=True, exist_ok=True)
+        frames='\n'.join(f'{f.filename}:{f.lineno} in {f.name}' for f in traceback.extract_tb(exc.__traceback__))
+        (app.DATA/'startup-error.txt').write_text(f'{type(exc).__name__}: {exc}\n{frames}', encoding='utf-8')
+        raise
