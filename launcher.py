@@ -47,6 +47,10 @@ def main():
             thread.join()
             return
         ensure_webview_runtime()
+        if '--gui-smoke' in sys.argv:
+            (app.DATA/'gui-smoke-ok.txt').unlink(missing_ok=True)
+            (app.DATA/'YuriCRM-window.png').unlink(missing_ok=True)
+            (app.DATA/'gui-error.txt').unlink(missing_ok=True)
         import webview
         url=f'http://127.0.0.1:{server.server_address[1]}/'
         window=webview.create_window('YuriCRM — поиск клиентов',url,width=1320,height=860,
@@ -66,13 +70,29 @@ def main():
                 screens=window.evaluate_js("['companies','analysis','demos','messages','campaign','settings'].every(k => { desktopNavigate(k); return document.querySelector('.desktop-page.active').dataset.page === k })")
                 if not screens: raise RuntimeError('Не все экраны приложения доступны')
                 window.evaluate_js("desktopNavigate('companies')")
+                # Capture the actual rendered WebView2 surface inside the native window.
+                import System
+                from System.IO import MemoryStream
+                from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat
+                stream=MemoryStream();tasks=[]
+                def capture():
+                    tasks.append(window.native.webview.CoreWebView2.CapturePreviewAsync(
+                        CoreWebView2CapturePreviewImageFormat.Png,stream))
+                window.native.Invoke(System.Action(capture))
+                if not tasks or not tasks[0].Wait(15000): raise RuntimeError('Не удалось снять изображение встроенного окна')
+                png=bytes(stream.ToArray())
+                if not png.startswith(b'\x89PNG') or len(png)<10000: raise RuntimeError('Встроенное окно вернуло пустой снимок')
+                (app.DATA/'YuriCRM-window.png').write_bytes(png)
                 (app.DATA/'gui-smoke-ok.txt').write_text('Встроенное окно и интерфейс открыты',encoding='utf-8')
-                time.sleep(20)
+                time.sleep(2)
+            except Exception:
+                (app.DATA/'gui-error.txt').write_text(traceback.format_exc(),encoding='utf-8')
             finally:
                 window.destroy()
         webview.start(gui_smoke,gui='edgechromium',debug=False)
         if '--gui-smoke' in sys.argv and not (app.DATA/'gui-smoke-ok.txt').exists():
-            raise RuntimeError('Встроенный интерфейс не прошёл проверку')
+            detail=(app.DATA/'gui-error.txt').read_text(encoding='utf-8') if (app.DATA/'gui-error.txt').exists() else ''
+            raise RuntimeError('Встроенный интерфейс не прошёл проверку. '+detail)
     finally:
         app.STOP.set()
         server.shutdown()

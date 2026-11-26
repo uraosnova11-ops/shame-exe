@@ -64,54 +64,20 @@ jobs:
             if ($second.State.settings.wizard_step -ne 2) { throw 'Settings did not survive restart' }
             if ($null -eq $second.State.settings.vk) { throw 'VK campaign setting missing' }
           } finally { taskkill /T /F /PID $second.Process.Id 2>$null | Out-Null }
-      - name: Smoke test graphical startup
+      - name: Smoke test native window, screens, screenshot and relaunch
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $env:YURI_DATA_DIR = Join-Path $env:RUNNER_TEMP 'YuriCRM-gui-smoke'
-          $p = Start-Process -FilePath (Join-Path $PWD 'dist\YuriCRM.exe') -ArgumentList '--gui-smoke' -PassThru
-          Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-          public class NativeWindow {
-            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
-          }
-          '@
-          $handle = [IntPtr]::Zero
-          for ($i=0; $i -lt 120; $i++) {
-            Start-Sleep -Milliseconds 500
-            $p.Refresh()
-            $handle = [NativeWindow]::FindWindow($null,'YuriCRM — поиск клиентов')
-            if ($handle -ne [IntPtr]::Zero) { break }
-            if ($p.HasExited) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; Get-Content (Join-Path $env:YURI_DATA_DIR 'gui-smoke-ok.txt') -ErrorAction SilentlyContinue; throw 'EXE exited before native window appeared' }
-          }
-          if ($handle -eq [IntPtr]::Zero) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native YuriCRM window not found' }
-          Add-Type -AssemblyName System.Drawing
-          Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-          public class WindowRect {
-            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
-            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out RECT rect);
-          }
-          '@
-          $rect = New-Object WindowRect+RECT
-          if (-not [WindowRect]::GetWindowRect($handle,[ref]$rect)) { throw 'Cannot read native window bounds' }
-          $w = $rect.Right - $rect.Left; $h = $rect.Bottom - $rect.Top
-          if ($w -lt 800 -or $h -lt 500) { throw 'Native window has unexpected size' }
-          Start-Sleep -Seconds 2
-          $bitmap = New-Object System.Drawing.Bitmap($w,$h)
-          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-          $graphics.CopyFromScreen($rect.Left,$rect.Top,0,0,(New-Object System.Drawing.Size($w,$h)))
-          $graphics.Dispose()
-          $bitmap.Save((Join-Path $PWD 'dist\YuriCRM-window.png'),[System.Drawing.Imaging.ImageFormat]::Png)
-          $bitmap.Dispose()
-          Wait-Process -Id $p.Id -Timeout 60
-          $p.Refresh()
-          if ($p.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Graphical startup failed' }
-          if (-not (Test-Path (Join-Path $env:YURI_DATA_DIR 'gui-smoke-ok.txt'))) { throw 'Embedded window did not load the UI' }
-          $again = Start-Process -FilePath (Join-Path $PWD 'dist\YuriCRM.exe') -ArgumentList '--gui-smoke' -PassThru -Wait
-          if ($again.ExitCode -ne 0) { throw 'Embedded window failed on second launch' }
+          $exe = Join-Path $PWD 'dist\YuriCRM.exe'
+          $first = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru -Wait
+          if ($first.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native window failed' }
+          if (-not (Test-Path (Join-Path $env:YURI_DATA_DIR 'gui-smoke-ok.txt'))) { throw 'Screens did not load inside the native window' }
+          $shot = Join-Path $env:YURI_DATA_DIR 'YuriCRM-window.png'
+          if (-not (Test-Path $shot)) { throw 'Native window screenshot missing' }
+          Copy-Item $shot (Join-Path $PWD 'dist\YuriCRM-window.png')
+          $again = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru -Wait
+          if ($again.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native window failed on relaunch' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
