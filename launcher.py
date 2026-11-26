@@ -58,6 +58,7 @@ def main():
                                      text_select=True,confirm_close=False)
         def gui_smoke():
             if '--gui-smoke' not in sys.argv: return
+            exit_code=1
             try:
                 ready=False
                 for _ in range(30):
@@ -87,11 +88,19 @@ def main():
                 if not png.startswith(b'\x89PNG') or len(png)<10000: raise RuntimeError('Встроенное окно вернуло пустой снимок')
                 (app.DATA/'YuriCRM-window.png').write_bytes(png)
                 (app.DATA/'gui-smoke-ok.txt').write_text('Встроенное окно и интерфейс открыты',encoding='utf-8')
+                exit_code=0
                 time.sleep(2)
             except Exception:
                 (app.DATA/'gui-error.txt').write_text(traceback.format_exc(),encoding='utf-8')
             finally:
                 window.destroy()
+                # PyWebView can keep its WinForms message loop alive after the
+                # window has been destroyed on a headless Actions desktop.
+                # This branch is used only by the packaged-EXE smoke test;
+                # the PNG and success marker above prove that the real WebView
+                # rendered and all screens were reachable before we exit.
+                time.sleep(.5)
+                os._exit(exit_code)
         webview.start(gui_smoke,gui='edgechromium',debug=False)
         if '--gui-smoke' in sys.argv and not (app.DATA/'gui-smoke-ok.txt').exists():
             detail=(app.DATA/'gui-error.txt').read_text(encoding='utf-8') if (app.DATA/'gui-error.txt').exists() else ''
