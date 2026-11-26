@@ -71,13 +71,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:YURI_DATA_DIR = Join-Path $env:RUNNER_TEMP 'YuriCRM-gui-smoke'
           $exe = Join-Path $PWD 'dist\YuriCRM.exe'
-          $first = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru -Wait
+          $first = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru
+          if (-not $first.WaitForExit(180000)) { taskkill /T /F /PID $first.Id 2>$null | Out-Null; throw 'Native window smoke timed out' }
           if ($first.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native window failed' }
           if (-not (Test-Path (Join-Path $env:YURI_DATA_DIR 'gui-smoke-ok.txt'))) { throw 'Screens did not load inside the native window' }
           $shot = Join-Path $env:YURI_DATA_DIR 'YuriCRM-window.png'
           if (-not (Test-Path $shot)) { throw 'Native window screenshot missing' }
           Copy-Item $shot (Join-Path $PWD 'dist\YuriCRM-window.png')
-          $again = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru -Wait
+          $again = Start-Process -FilePath $exe -ArgumentList '--gui-smoke' -PassThru
+          if (-not $again.WaitForExit(180000)) { taskkill /T /F /PID $again.Id 2>$null | Out-Null; throw 'Native window relaunch timed out' }
           if ($again.ExitCode -ne 0) { Get-Content (Join-Path $env:YURI_DATA_DIR 'startup-error.txt') -ErrorAction SilentlyContinue; throw 'Native window failed on relaunch' }
       - uses: actions/upload-artifact@v4
         if: always()

@@ -111,7 +111,7 @@ if __name__=='__main__':
         app.DATA.mkdir(parents=True,exist_ok=True)
         frames='\n'.join(f'{f.filename}:{f.lineno} in {f.name}' for f in traceback.extract_tb(exc.__traceback__))
         (app.DATA/'startup-error.txt').write_text(f'{type(exc).__name__}: {exc}\n{frames}',encoding='utf-8')
-        if '--smoke' not in sys.argv:
+        if '--smoke' not in sys.argv and '--gui-smoke' not in sys.argv:
             import ctypes
             ctypes.windll.user32.MessageBoxW(None,
                 'Не удалось открыть окно YuriCRM. Проверьте, что Microsoft Edge WebView2 установлен, и повторите запуск. Подробности: %LOCALAPPDATA%\\YuriCRM\\startup-error.txt',
