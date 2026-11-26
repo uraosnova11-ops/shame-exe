@@ -28,7 +28,7 @@ class FlowTest(unittest.TestCase):
             self.assertEqual(c.execute('SELECT status FROM companies WHERE id=?',(cid,)).fetchone()['status'],'проверена')
             self.run_job(c,'demo',cid)
             r=c.execute('SELECT * FROM companies WHERE id=?',(cid,)).fetchone()
-            self.assertIn('НЕЗАВИСИМАЯ', (app.DATA/'demos'/r['demo_path'].split('/')[-1]).read_text())
+            self.assertIn('НЕЗАВИСИМАЯ', (app.DATA/'demos'/r['demo_path'].split('/')[-1]).read_text(encoding='utf-8'))
             c.execute("UPDATE companies SET channel='telegram',telegram_username='@test_bakery',chat_verified=1,consent=1,contact_evidence='Сайт компании' WHERE id=?",(cid,))
             calls=[]
             def fake_send(channel,recipient,body,image_path=None):
