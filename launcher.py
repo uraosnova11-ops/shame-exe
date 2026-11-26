@@ -76,7 +76,11 @@ def main():
                     except Exception: pass
                     time.sleep(.5)
                 if not ready: raise RuntimeError('Главные экраны не открылись во встроенном окне: '+diagnostic)
-                wizard=window.evaluate_js("document.querySelectorAll('#wizard [data-step].open').length === 1 && !!document.getElementById('w_api_id')")
+                wizard=False
+                for _ in range(40):
+                    wizard=window.evaluate_js("document.querySelectorAll('#wizard [data-step].open').length === 1 && !!document.getElementById('w_api_id')")
+                    if wizard: break
+                    time.sleep(.25)
                 if not wizard: raise RuntimeError('Мастер первого запуска не отобразил поля подключения')
                 screens=window.evaluate_js("['companies','analysis','demos','messages','campaign','settings'].every(k => { desktopNavigate(k); return document.querySelector('.desktop-page.active').dataset.page === k })")
                 if not screens: raise RuntimeError('Не все экраны приложения доступны')
