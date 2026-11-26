@@ -70,6 +70,9 @@ def main():
                 screens=window.evaluate_js("['companies','analysis','demos','messages','campaign','settings'].every(k => { desktopNavigate(k); return document.querySelector('.desktop-page.active').dataset.page === k })")
                 if not screens: raise RuntimeError('Не все экраны приложения доступны')
                 window.evaluate_js("desktopNavigate('companies')")
+                active=window.evaluate_js("Array.from(document.querySelectorAll('.nav-item.active')).map(el=>el.dataset.target).join(',')")
+                if active!='companies': raise RuntimeError('Боковое меню не переключилось на компании')
+                time.sleep(.8)  # Let WebView2 paint after the navigation test.
                 # Capture the actual rendered WebView2 surface inside the native window.
                 import System
                 from System.IO import MemoryStream
