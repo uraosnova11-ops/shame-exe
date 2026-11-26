@@ -76,6 +76,8 @@ def main():
                     except Exception: pass
                     time.sleep(.5)
                 if not ready: raise RuntimeError('Главные экраны не открылись во встроенном окне: '+diagnostic)
+                wizard=window.evaluate_js("document.querySelectorAll('#wizard [data-step].open').length === 1 && !!document.getElementById('w_api_id')")
+                if not wizard: raise RuntimeError('Мастер первого запуска не отобразил поля подключения')
                 screens=window.evaluate_js("['companies','analysis','demos','messages','campaign','settings'].every(k => { desktopNavigate(k); return document.querySelector('.desktop-page.active').dataset.page === k })")
                 if not screens: raise RuntimeError('Не все экраны приложения доступны')
                 window.evaluate_js("desktopNavigate('companies')")
@@ -134,4 +136,3 @@ if __name__=='__main__':
                 'Не удалось открыть окно YuriCRM. Проверьте, что Microsoft Edge WebView2 установлен, и повторите запуск. Подробности: %LOCALAPPDATA%\\YuriCRM\\startup-error.txt',
                 'YuriCRM — ошибка запуска',0x10)
         sys.exit(1)
-
