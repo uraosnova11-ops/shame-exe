@@ -98,6 +98,7 @@ def main():
             raise RuntimeError('Встроенный интерфейс не прошёл проверку. '+detail)
     finally:
         app.STOP.set()
+        app.TG.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

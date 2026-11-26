@@ -2,4 +2,4 @@
 $ErrorActionPreference = 'Stop'
 python -m pip install -r requirements.txt
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --add-data 'index.html;.' --collect-all telethon launcher.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --collect-all telethon --add-data 'index.html;.' --add-data 'desktop.css;.' --add-data 'desktop.js;.' launcher.py

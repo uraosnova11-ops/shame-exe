@@ -31,7 +31,7 @@ jobs:
           $actual = (Get-FileHash MicrosoftEdgeWebView2RuntimeInstallerX64.exe -Algorithm SHA256).Hash
           if ($actual -ne '47BC51387AFF95C1275CE38CFBBB5FBAB99B43B33214049877BBCDBCC7A970D5') { throw 'Official WebView2 installer hash mismatch' }
       - name: Build windowed executable
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --add-data "index.html;." --add-data "desktop.css;." --add-data "desktop.js;." --add-binary "MicrosoftEdgeWebView2RuntimeInstallerX64.exe;." launcher.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name YuriCRM --collect-all telethon --add-data "index.html;." --add-data "desktop.css;." --add-data "desktop.js;." --add-binary "MicrosoftEdgeWebView2RuntimeInstallerX64.exe;." launcher.py
       - name: Smoke test bundled EXE and persisted settings
         shell: pwsh
         run: |
@@ -62,7 +62,8 @@ jobs:
           $second = Start-App
           try {
             if ($second.State.settings.wizard_step -ne 2) { throw 'Settings did not survive restart' }
-            if ($null -eq $second.State.settings.vk) { throw 'VK campaign setting missing' }
+            if (-not $second.State.telegram_user.available) { throw 'Telethon not bundled' }
+            if (-not $second.State.settings.telegram) { throw 'Telegram campaign setting missing' }
           } finally { taskkill /T /F /PID $second.Process.Id 2>$null | Out-Null }
       - name: Smoke test native window, screens, screenshot and relaunch
         shell: pwsh
