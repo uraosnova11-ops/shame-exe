@@ -61,13 +61,21 @@ def main():
             exit_code=1
             try:
                 ready=False
-                for _ in range(30):
+                diagnostic=''
+                for _ in range(60):
                     try:
-                        ready=window.evaluate_js("document.querySelectorAll('.nav-item').length === 6")
+                        result=window.evaluate_js("""(() => { try {
+                          if (!document.querySelector('.nav-item') && typeof desktopInit === 'function') desktopInit();
+                          return {ready: document.querySelectorAll('.nav-item').length === 6,
+                                  state: document.readyState, url: location.href,
+                                  text: (document.body?.innerText || '').slice(0, 500)};
+                        } catch (e) { return {ready:false,error:String(e && (e.stack || e))}; } })()""")
+                        ready=bool(result and result.get('ready'))
+                        diagnostic=str(result)
                         if ready: break
                     except Exception: pass
-                    time.sleep(.3)
-                if not ready: raise RuntimeError('Главные экраны не открылись во встроенном окне')
+                    time.sleep(.5)
+                if not ready: raise RuntimeError('Главные экраны не открылись во встроенном окне: '+diagnostic)
                 screens=window.evaluate_js("['companies','analysis','demos','messages','campaign','settings'].every(k => { desktopNavigate(k); return document.querySelector('.desktop-page.active').dataset.page === k })")
                 if not screens: raise RuntimeError('Не все экраны приложения доступны')
                 window.evaluate_js("desktopNavigate('companies')")
@@ -126,3 +134,4 @@ if __name__=='__main__':
                 'Не удалось открыть окно YuriCRM. Проверьте, что Microsoft Edge WebView2 установлен, и повторите запуск. Подробности: %LOCALAPPDATA%\\YuriCRM\\startup-error.txt',
                 'YuriCRM — ошибка запуска',0x10)
         sys.exit(1)
+
