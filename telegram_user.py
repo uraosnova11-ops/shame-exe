@@ -33,32 +33,32 @@ def _blob(data):
     return DATA_BLOB(len(data),ctypes.cast(buf,ctypes.POINTER(ctypes.c_byte))),buf
 
 def protect(data):
-    if os.name!='nt': raise TelegramUnavailable('����񭭮� �࠭���� ����㯭� ⮫쪮 � Windows')
+    if os.name!='nt': raise TelegramUnavailable('Защищённое хранилище доступно только в Windows')
     inp,keep=_blob(data);out=DATA_BLOB()
     if not _crypt.CryptProtectData(ctypes.byref(inp),None,None,None,None,0,ctypes.byref(out)):
-        raise TelegramUnavailable('Windows �� ��������� ��࠭��� ������� ����. ������� �ਫ������ ��� ���筮� ���⭮� ������� Windows.')
+        raise TelegramUnavailable('Windows не позволила сохранить защищённую сессию. Запустите приложение под обычной учётной записью Windows.')
     try: return ctypes.string_at(out.pbData,out.cbData)
     finally: _kernel.LocalFree(out.pbData)
 
 def unprotect(data):
-    if os.name!='nt': raise TelegramUnavailable('����񭭮� �࠭���� ����㯭� ⮫쪮 � Windows')
+    if os.name!='nt': raise TelegramUnavailable('Защищённое хранилище доступно только в Windows')
     inp,keep=_blob(data);out=DATA_BLOB()
     if not _crypt.CryptUnprotectData(ctypes.byref(inp),None,None,None,None,0,ctypes.byref(out)):
-        raise TelegramUnavailable('Windows �� ᬮ��� ����஢��� ���� ��� ⥪�饣� ���짮��⥫�. �������� ������ ������.')
+        raise TelegramUnavailable('Windows не смогла расшифровать сессию для текущего пользователя. Подключите аккаунт заново.')
     try: return ctypes.string_at(out.pbData,out.cbData)
     finally: _kernel.LocalFree(out.pbData)
 
 def friendly_error(e):
     name=type(e).__name__
     if name in ('FloodWaitError','FloodPremiumWaitError'):
-        return 'Telegram ���ॡ���� ����. ��।� ��⠭������; �������� ��। ������ ����祭���.'
+        return 'Telegram потребовал паузу. Очередь остановлена; подождите перед повторным включением.'
     if name in ('PeerFloodError','UserIsBlockedError','UserPrivacyRestrictedError','ChatWriteForbiddenError'):
-        return 'Telegram ����⨫ ���饭�� �⮬� ������ ��� ��࠭�稫 ������. ��।� ��⠭������.'
+        return 'Telegram запретил обращение этому адресату или ограничил аккаунт. Очередь остановлена.'
     if name in ('PhoneCodeInvalidError','PhoneCodeExpiredError'):
-        return '������ ��� ����祭�� ���. ������ ���� ��� � ������ �室.'
-    if name=='PasswordHashInvalidError': return '������ ��஫� �����⠯��� �஢�ન.'
-    if name=='ApiIdInvalidError': return '�஢���� API ID � API hash �� my.telegram.org.'
-    return '�� 㤠���� �믮����� ������ Telegram. �஢���� ������祭��, ��ࠬ���� � ������ ������.'
+        return 'Неверный или просроченный код. Запросите новый код и повторите вход.'
+    if name=='PasswordHashInvalidError': return 'Неверный пароль двухэтапной проверки.'
+    if name=='ApiIdInvalidError': return 'Проверьте API ID и API hash на my.telegram.org.'
+    return 'Не удалось выполнить операцию Telegram. Проверьте подключение, параметры и повторите попытку.'
 
 class UserTelegram:
     def __init__(self, path, on_message=None):
@@ -69,7 +69,7 @@ class UserTelegram:
     def _read(self):
         if not self.path.exists(): return None
         try: return json.loads(unprotect(self.path.read_bytes()))
-        except Exception: raise TelegramUnavailable('�� 㤠���� ������ ��࠭��� ���� Windows. �������� ������ ������.')
+        except Exception: raise TelegramUnavailable('Не удалось открыть сохранённую сессию Windows. Подключите аккаунт заново.')
 
     def _write(self, obj):
         self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -90,7 +90,7 @@ class UserTelegram:
     def call(self, coro, timeout=45):
         self.start()
         try: return asyncio.run_coroutine_threadsafe(coro,self.loop).result(timeout)
-        except FutureTimeout: raise TelegramUnavailable('Telegram �� �⢥⨫ ���६�; �஢���� ��� � ����� � �ਫ������.')
+        except FutureTimeout: raise TelegramUnavailable('Telegram не ответил вовремя; проверьте сеть и статус в приложении.')
 
     def status(self):
         return {'connected':bool(self.profile),'profile':self.profile,'error':self.last_error,'available':self._available()}
@@ -119,37 +119,37 @@ class UserTelegram:
         if not saved: return
         await self._connect(saved)
         if await self.client.is_user_authorized(): await self._set_profile(saved)
-        else: self.last_error='����� Telegram ������⢨⥫쭠. �������� ������ ������.'
+        else: self.last_error='Сессия Telegram недействительна. Подключите аккаунт заново.'
 
     async def _set_profile(self,saved):
         me=await self.client.get_me()
-        if not me or me.bot: raise TelegramUnavailable('�������� ���짮��⥫�᪨� ������, � �� ���.')
+        if not me or me.bot: raise TelegramUnavailable('Подключите пользовательский аккаунт, а не бота.')
         self.profile={'id':me.id,'name':' '.join(filter(None,[me.first_name,me.last_name])),
           'username':me.username or '', 'phone':saved.get('phone','')}
         saved['session']=self.client.session.save();self._write(saved);self.last_error=''
 
     async def _begin(self,api_id,api_hash,phone):
-        if not re.fullmatch(r'\+\d{8,15}',phone): raise TelegramUnavailable('������ ����� � ����㭠த��� �ଠ�, ���ਬ�� +79001234567.')
+        if not re.fullmatch(r'\+\d{8,15}',phone): raise TelegramUnavailable('Введите номер в международном формате, например +79001234567.')
         if not str(api_id).isdigit() or not re.fullmatch('[a-fA-F0-9]{32}',api_hash):
-            raise TelegramUnavailable('������ API ID � API hash �� my.telegram.org.')
+            raise TelegramUnavailable('Введите API ID и API hash из my.telegram.org.')
         saved={'api_id':int(api_id),'api_hash':api_hash,'phone':phone,'session':''}
         try:
             await self._connect(saved)
             sent=await self.client.send_code_request(phone)
             saved['session']=self.client.session.save();self._write(saved)
             self.pending={'phone_hash':sent.phone_code_hash,'phone':phone}
-            return {'step':'code','hint':'������ ���, ����祭�� � Telegram ��� ��㣨� ᯮᮡ��, 㪠����� Telegram.'}
+            return {'step':'code','hint':'Введите код, полученный в Telegram или другим способом, указанным Telegram.'}
         except Exception as e:
             if isinstance(e,TelegramUnavailable): raise
             raise TelegramUnavailable(friendly_error(e))
 
     async def _code(self,code):
-        if not self.pending: raise TelegramUnavailable('���砫� ������ ��� �室� � �ਫ������.')
+        if not self.pending: raise TelegramUnavailable('Сначала запросите код входа в приложении.')
         saved=self._read()
         try:
             from telethon.errors import SessionPasswordNeededError
             try: await self.client.sign_in(phone=saved['phone'],code=code,phone_code_hash=self.pending['phone_hash'])
-            except SessionPasswordNeededError: return {'step':'password','hint':'������ ��஫� �����⠯��� �஢�ન.'}
+            except SessionPasswordNeededError: return {'step':'password','hint':'Введите пароль двухэтапной проверки.'}
             await self._set_profile(saved);self.pending=None
             return {'step':'connected','profile':self.profile}
         except Exception as e:
@@ -157,7 +157,7 @@ class UserTelegram:
             raise TelegramUnavailable(friendly_error(e))
 
     async def _password(self,password):
-        if not self.pending: raise TelegramUnavailable('���砫� ������ ��� �室� � �ਫ������.')
+        if not self.pending: raise TelegramUnavailable('Сначала запросите код входа в приложении.')
         saved=self._read()
         try:
             await self.client.sign_in(password=password)
@@ -167,13 +167,13 @@ class UserTelegram:
 
     async def _send(self,recipient,body,image_path=None):
         from telethon.tl.types import User
-        if not self.profile or not self.client: raise TelegramUnavailable('���砫� �������� ���� Telegram-������.')
+        if not self.profile or not self.client: raise TelegramUnavailable('Сначала подключите личный Telegram-аккаунт.')
         recipient=recipient.strip()
         if not re.fullmatch(r'@[A-Za-z0-9_]{5,32}',recipient):
-            raise TelegramUnavailable('������ ���⢥ত�� ������� @username, ��� ����� ⥫�䮭� ��� ��宦��� �����.')
+            raise TelegramUnavailable('Укажите подтверждённый деловой @username, без номера телефона или похожего имени.')
         try:
             peer=await self.client.get_entity(recipient)
-            if not isinstance(peer,User) or peer.bot: raise TelegramUnavailable('���⠪� ������ ���� ���짮��⥫�᪨� ������ �����⮬, � �� ��⮬ ��� �������.')
+            if not isinstance(peer,User) or peer.bot: raise TelegramUnavailable('Контакт должен быть пользовательским деловым аккаунтом, а не ботом или каналом.')
             msg=await self.client.send_file(peer,image_path,caption=body) if image_path else await self.client.send_message(peer,body)
             return str(msg.id),str(peer.id)
         except TelegramUnavailable: raise
@@ -196,4 +196,3 @@ class UserTelegram:
     def password(self,password): return self.call(self._password(password))
     def send(self,recipient,body,image_path=None): return self.call(self._send(recipient,body,image_path))
     def disconnect(self): return self.call(self._disconnect())
-

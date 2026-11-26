@@ -21,15 +21,15 @@ class FlowTest(unittest.TestCase):
         app.perform(c,{'kind':kind,'company_id':cid})
     def test_end_to_end_with_test_transport(self):
         with app.db() as c:
-            cid=app.add_company(c,{'name':'���⮢�� ������','category':'������','address':'���⮢-��-����, ���⮢�� 1','source':'import'})
+            cid=app.add_company(c,{'name':'Тестовая пекарня','category':'пекарня','address':'Ростов-на-Дону, Тестовая 1','source':'import'})
             s=app.settings(c);s.update(auto=True,telegram=True,allowed_hours='0-24',test_sent=True)
             c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
             self.run_job(c,'analyze',cid)
-            self.assertEqual(c.execute('SELECT status FROM companies WHERE id=?',(cid,)).fetchone()['status'],'�஢�७�')
+            self.assertEqual(c.execute('SELECT status FROM companies WHERE id=?',(cid,)).fetchone()['status'],'проверена')
             self.run_job(c,'demo',cid)
             r=c.execute('SELECT * FROM companies WHERE id=?',(cid,)).fetchone()
-            self.assertIn('�����������', (app.DATA/'demos'/r['demo_path'].split('/')[-1]).read_text())
-            c.execute("UPDATE companies SET channel='telegram',telegram_username='@test_bakery',chat_verified=1,consent=1,contact_evidence='���� ��������' WHERE id=?",(cid,))
+            self.assertIn('НЕЗАВИСИМАЯ', (app.DATA/'demos'/r['demo_path'].split('/')[-1]).read_text())
+            c.execute("UPDATE companies SET channel='telegram',telegram_username='@test_bakery',chat_verified=1,consent=1,contact_evidence='Сайт компании' WHERE id=?",(cid,))
             calls=[]
             def fake_send(channel,recipient,body,image_path=None):
                 calls.append((recipient,body))
@@ -39,20 +39,19 @@ class FlowTest(unittest.TestCase):
                 self.run_job(c,'send',cid)
             self.assertEqual(len(calls),1)
             self.assertEqual(calls[0][0],'@test_bakery')
-            self.assertIn('���⮢�� ������',calls[0][1])
+            self.assertIn('Тестовая пекарня',calls[0][1])
             self.assertEqual(c.execute("SELECT state FROM messages WHERE direction='out'").fetchone()['state'],'sent')
-            app.inbound(c,'telegram','123','�⮯','3')
-            self.assertEqual(c.execute('SELECT status FROM companies WHERE id=?',(cid,)).fetchone()['status'],'�⪠�')
+            app.inbound(c,'telegram','123','стоп','3')
+            self.assertEqual(c.execute('SELECT status FROM companies WHERE id=?',(cid,)).fetchone()['status'],'отказ')
     def test_no_consent_no_send(self):
         with app.db() as c:
-            cid=app.add_company(c,{'name':'����','category':'ᠫ�� �����'})
+            cid=app.add_company(c,{'name':'Тест','category':'салон красоты'})
             s=app.settings(c);s.update(auto=True,telegram=True,allowed_hours='0-24')
             c.execute('UPDATE settings SET body=? WHERE id=1',(json.dumps(s,ensure_ascii=False),))
             self.run_job(c,'demo',cid)
             c.execute("UPDATE companies SET channel='telegram',telegram_username='@test_contact',chat_verified=1 WHERE id=?",(cid,))
-            with self.assertRaisesRegex(ValueError,'ࠧ�襭��'):
+            with self.assertRaisesRegex(ValueError,'разрешения'):
                 self.run_job(c,'send',cid)
             self.assertFalse(c.execute('SELECT * FROM messages').fetchone())
 
 if __name__=='__main__': unittest.main()
-
