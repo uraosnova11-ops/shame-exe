@@ -67,7 +67,7 @@ def main():
                 if not screens: raise RuntimeError('Не все экраны приложения доступны')
                 window.evaluate_js("desktopNavigate('companies')")
                 (app.DATA/'gui-smoke-ok.txt').write_text('Встроенное окно и интерфейс открыты',encoding='utf-8')
-                time.sleep(10)
+                time.sleep(20)
             finally:
                 window.destroy()
         webview.start(gui_smoke,gui='edgechromium',debug=False)
